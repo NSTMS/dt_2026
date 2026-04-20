@@ -13,6 +13,7 @@ from ultralytics import YOLO
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float64
+from pyzbar.pyzbar import decode
 
 TARGET_FPS = 20
 FRAME_INTERVAL = 1.0 / TARGET_FPS
@@ -24,7 +25,7 @@ class UAVDetectionPublisher(Node):
         super().__init__('uav_detection_node')
 
         # --- YOLO & Obrazy ---
-        self.publisher_ = self.create_publisher(Detection, '/yolo/detections', 10)
+        self.publisher_ = self.create_publisher(Detection, 'detection', 10)
         self.model = YOLO("yolov8n_aerial.pt")
         self.bridge = CvBridge()
 
@@ -76,8 +77,24 @@ class UAVDetectionPublisher(Node):
         # self.send_to_organizers(self.current_baro_alt)
 
     def publish_detections(self, frame, results):
+        small = cv2.resize(frame, (480,360))
+        decoded_objects = decode(small)
+
+        # Sprawdzamy czy są jakiekolwiek detekcje
         if len(results[0].boxes) == 0:
+            self.get_logger().debug("Brak detekcji")
             return
+
+        qr=""
+
+        if decoded_objects:
+            for obj in decoded_objects:
+                data = obj.data.decode('utf-8')
+
+                qr=data
+                self.get_logger().info(f"QR: {data}")
+        else:
+            self.get_logger().debug("Brak QR")
 
         annotated_frame = results[0].plot()
         msg = Detection()
@@ -85,6 +102,7 @@ class UAVDetectionPublisher(Node):
         detected_classes = [self.model.names[int(box.cls[0])] for box in results[0].boxes]
         msg.object_type = f"{', '.join(set(detected_classes))} | altitute: {self.current_baro_alt:.2f}m"
         msg.object_image = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
+        msg.qr_value=qr
 
         self.publisher_.publish(msg)
         self.object_id_counter += 1

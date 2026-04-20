@@ -8,6 +8,8 @@ from rclpy.node import Node
 from cv_bridge import CvBridge
 from dualtech_msgs.msg import Detection
 from ultralytics import YOLO
+from pyzbar.pyzbar import decode
+from std_msgs.msg import String
 
 TARGET_FPS = 20
 FRAME_INTERVAL = 1.0 / TARGET_FPS
@@ -37,7 +39,7 @@ frame_queue = queue.Queue(maxsize=1)
 class UGVDetectionPublisher(Node):
     def __init__(self):
         super().__init__('detection_publisher')
-        self.publisher_ = self.create_publisher(Detection, '/yolo/detections', 10)
+        self.publisher_ = self.create_publisher(Detection, 'detection', 10)
         self.model = YOLO("yolov8n_ground.pt")
         self.bridge = CvBridge()
         self.object_id_counter = 0
@@ -46,10 +48,24 @@ class UGVDetectionPublisher(Node):
         self.get_logger().info("Detection publisher uruchomiony - pełny obraz z boxami")
 
     def publish_detections(self, frame, results):
+        small = cv2.resize(frame, (480,360))
+        decoded_objects = decode(small)
+
         # Sprawdzamy czy są jakiekolwiek detekcje
         if len(results[0].boxes) == 0:
             self.get_logger().debug("Brak detekcji")
             return
+
+        qr=""
+        
+        if decoded_objects:
+            for obj in decoded_objects:
+                data = obj.data.decode('utf-8')
+
+                qr=data
+                self.get_logger().info(f"QR: {data}")
+        else:
+            self.get_logger().debug("Brak QR")
 
         # Metoda .plot() zwraca obraz (numpy array) z naniesionymi boxami i etykietami
         annotated_frame = results[0].plot()
@@ -64,6 +80,8 @@ class UGVDetectionPublisher(Node):
 
         # Konwersja całego naniesionego obrazu na format ROS2
         msg.object_image = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
+        
+        msg.qr_value=qr
 
         self.publisher_.publish(msg)
         self.get_logger().info(f"Opublikowano obraz z detekcjami: {msg.object_type}")
