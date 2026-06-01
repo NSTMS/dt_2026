@@ -11,10 +11,10 @@ class Motor : public rclcpp::Node
 public:
     Motor() : Node("motor_controller")
     {
-        left_pwm_pin = 6;
-        left_dir_pin = 19;
-        right_pwm_pin = 5;
-        right_dir_pin = 26;
+        left_pwm_pin = 17;
+        left_dir_pin = 27;
+        right_pwm_pin = 22;
+        right_dir_pin = 23;
 
         h = lgGpiochipOpen(4);
 
