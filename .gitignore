@@ -1,0 +1,45 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── ROS 2 / colcon (gdy budujesz wewnątrz src/) ─────────────────────────────
+install/
+log/
+
+# ── IDE ─────────────────────────────────────────────────────────────────────
+.idea/
+*.swp
+*.swo
+*~
+
+# ── System ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Runtime / logi z węzłów ──────────────────────────────────────────────────
+flight_log.csv
+*.log
+
+# ── GPIO / lgpio (named pipe tworzony w runtime) ──────────────────────────────
+.lgd-*
+
+# ── YOLO / Ultralytics (cache, nie wytrenowane modele) ──────────────────────
+runs/
+.ultralytics/
+*.cache
+
+# ── Modele YOLO (duże pliki binarne — odkomentuj, jeśli nie trzymasz w repo) ─
+# *.pt

@@ -3,6 +3,7 @@ import threading
 import time
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from dualtech_detection.filter import SameDetectionFilter
 from dualtech_detection.geolocation import CameraModel, estimate_ground_offset
@@ -24,6 +25,10 @@ DETECTION_MIN_COUNT = int(os.getenv('DETECTION_MIN_COUNT', '3'))
 CAMERA_H_FOV_DEG = float(os.getenv('CAMERA_H_FOV_DEG', '70'))
 CAMERA_V_FOV_DEG = float(os.getenv('CAMERA_V_FOV_DEG', '50'))
 YOLO_CONFIDENCE = float(os.getenv('YOLO_CONFIDENCE', '0.5'))
+YOLO_MODEL = os.getenv(
+    'YOLO_MODEL',
+    os.path.join(get_package_share_directory('uav_detection'), 'yolov8n_aerial.pt'),
+)
 
 GST_PIPELINE_UDP = (
     f'udpsrc port={UDP_PORT} ! '
@@ -44,7 +49,7 @@ class UavDetectionNode(Node):
         self._filter = SameDetectionFilter(DETECTION_WINDOW_SEC, DETECTION_MIN_COUNT)
         self._object_id = 0
 
-        self._detector = YoloDetector('yolov8n_aerial.pt', YOLO_CONFIDENCE)
+        self._detector = YoloDetector(YOLO_MODEL, YOLO_CONFIDENCE)
         self._stream = GStreamerFrameStream(
             GST_PIPELINE_UDP,
             logger=lambda msg: self.get_logger().error(msg),

@@ -3,6 +3,7 @@ import threading
 import time
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from dualtech_detection.filter import SameDetectionFilter
 from dualtech_detection.pipeline import DetectionLoop, GStreamerFrameStream, YoloDetector
@@ -18,6 +19,10 @@ CAMERA_HEIGHT = int(os.getenv('CAMERA_HEIGHT', '480'))
 DETECTION_WINDOW_SEC = float(os.getenv('DETECTION_WINDOW_SEC', '10'))
 DETECTION_MIN_COUNT = int(os.getenv('DETECTION_MIN_COUNT', '3'))
 YOLO_CONFIDENCE = float(os.getenv('YOLO_CONFIDENCE', '0.5'))
+YOLO_MODEL = os.getenv(
+    'YOLO_MODEL',
+    os.path.join(get_package_share_directory('ugv_detection'), 'yolov8n_ground.pt'),
+)
 
 GST_PIPELINE_CSI = (
     'libcamerasrc ! '
@@ -38,7 +43,7 @@ class UgvDetectionNode(Node):
         self._filter = SameDetectionFilter(DETECTION_WINDOW_SEC, DETECTION_MIN_COUNT)
         self._object_id = 0
 
-        self._detector = YoloDetector('yolov8n_ground.pt', YOLO_CONFIDENCE)
+        self._detector = YoloDetector(YOLO_MODEL, YOLO_CONFIDENCE)
         self._stream = GStreamerFrameStream(
             GST_PIPELINE_CSI,
             logger=lambda msg: self.get_logger().error(msg),
