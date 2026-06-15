@@ -1,16 +1,22 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>dualtech</name>
+  <name>uav_detection</name>
   <version>0.0.1</version>
-  <description>Package for the DUAL-TECH AGH competition</description>
+  <description>Detekcja UAV z telemetrią mavros (YOLO, QR, zrzut ładunku)</description>
   <maintainer email="jidzi@agh.edu.pl">Hubert Szolc</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>
   <depend>cv_bridge</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>dualtech_msgs</depend>
+  <depend>dualtech_detection</depend>
+  <depend>geometry_msgs</depend>
+
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>mavros_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

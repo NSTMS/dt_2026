@@ -1,0 +1,24 @@
+actuator_node:
+  ros__parameters:
+    max_stepper_steps: 4096.0
+    min_servo_angle: 30.0
+    max_servo_angle: 120.0
+    home_arm_angle: 75.0
+    invert_servo: true
+    reverse_stepper: false
+
+keyboard_controller:
+  ros__parameters:
+    max_stepper_steps: 4096.0
+    min_servo_angle: 30.0
+    max_servo_angle: 120.0
+    home_arm_angle: 75.0
+    stepper_increment: 128.0
+    servo_increment: 5.0
+    cmd_vel_rate_hz: 10.0
+
+motor:
+  ros__parameters:
+    pwm_frequency_hz: 5000.0
+    watchdog_timeout_sec: 0.8
+    min_duty_percent: 15.0

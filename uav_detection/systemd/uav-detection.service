@@ -1,0 +1,16 @@
+[Unit]
+Description=Dual-Tech UAV stack (mavros, detection, drop servo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pbf
+WorkingDirectory=/home/pbf/dual_tech_ws
+Environment=ROS_DOMAIN_ID=0
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/pbf/dual_tech_ws/install/setup.bash && ros2 launch uav_detection drone.launch.py'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

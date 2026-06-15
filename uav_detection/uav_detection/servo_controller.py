@@ -14,6 +14,7 @@ Dependencies:
   pip install readchar
 """
 
+import os
 import sys
 import tty
 import termios
@@ -22,6 +23,7 @@ import time
 
 import lgpio
 import rclpy
+from mavros_msgs.msg import RCIn
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
@@ -57,6 +59,12 @@ SWEEP_DELAY     = 0.015     # Seconds between steps (~1.5 s per pass)
 
 # ── lgpio PWM settings ─────────────────────────────────────────────────────────
 PWM_FREQUENCY   = 50        # Hz — standard servo frequency
+
+# ── RC trigger (RadioMaster Pocket → mavros → CH8) ─────────────────────────────
+RC_RELEASE_CHANNEL = int(os.getenv('RC_RELEASE_CHANNEL', '8'))   # kanał 1..18
+RC_PWM_OFF = int(os.getenv('RC_PWM_OFF', '1000'))                  # wyłączony
+RC_PWM_ON = int(os.getenv('RC_PWM_ON', '2000'))                    # włączony
+RC_PWM_THRESHOLD = int(os.getenv('RC_PWM_THRESHOLD', '1500'))      # próg HIGH
 
 
 # ─── STDIN KEYBOARD READER ─────────────────────────────────────────────────────
@@ -113,6 +121,7 @@ class ServoControllerNode(Node):
       - Publishes sweep status on  /servo/status (std_msgs/String).
       - Publishes sweep active flag on /servo/active (std_msgs/Bool).
       - Subscribes to /servo/trigger (std_msgs/Bool) for remote triggering.
+      - Subscribes to /mavros/rc/in — rising edge on RC CH8 triggers sweep.
 
     Sweep profile:  HOME → SWEEP_START → SWEEP_END → HOME
     """
@@ -140,10 +149,12 @@ class ServoControllerNode(Node):
 
         # ── Subscriber ───────────────────────────────────────────────────────
         self.create_subscription(Bool, '/servo/trigger', self._trigger_callback, 10)
+        self.create_subscription(RCIn, '/mavros/rc/in', self._rc_callback, 10)
 
         # ── Internal state ───────────────────────────────────────────────────
         self._sweep_lock    = threading.Lock()
         self._sweep_running = False
+        self._rc_channel_was_high = False
 
         # ── Stdin keyboard listener ──────────────────────────────────────────
         self._key_reader = StdinKeyReader(callback=self._on_key_press)
@@ -154,6 +165,10 @@ class ServoControllerNode(Node):
         self.get_logger().info(
             f'Sweep: HOME({SERVO_HOME_PW}µs) → '
             f'START({SWEEP_START_PW}µs) → END({SWEEP_END_PW}µs) → HOME({SERVO_HOME_PW}µs)'
+        )
+        self.get_logger().info(
+            f'RC trigger: CH{RC_RELEASE_CHANNEL} '
+            f'({RC_PWM_OFF}=OFF, {RC_PWM_ON}=ON, próg={RC_PWM_THRESHOLD})'
         )
 
     # ── Servo output ─────────────────────────────────────────────────────────
@@ -222,11 +237,11 @@ class ServoControllerNode(Node):
                 self.get_logger().info(f'Moving to sweep start ({SWEEP_START_PW} µs)')
                 self._sweep_range(SERVO_HOME_PW, SWEEP_START_PW)
 
-            self.get_logger().info(f'Sweeping {SWEEP_START_PW} µs → {SWEEP_END_PW} µs')
-            self._sweep_range(SWEEP_START_PW, 1200)
+            self.get_logger().info(f'Reverse sweep {SWEEP_START_PW} µs → {SWEEP_END_PW} µs')
+            self._sweep_range(SWEEP_START_PW, SWEEP_END_PW)
 
             self.get_logger().info(f'Returning home ({SERVO_HOME_PW} µs)')
-            self._sweep_range(1200, SERVO_HOME_PW)
+            self._sweep_range(SWEEP_END_PW, SERVO_HOME_PW)
 
             time.sleep(0.3)       # Let servo settle at home position
             self._servo_off()     # Cut PWM — stops jitter while idle
@@ -240,8 +255,6 @@ class ServoControllerNode(Node):
         finally:
             with self._sweep_lock:
                 self._sweep_running = False
-            self._publish_active(False)
-
             self._publish_active(False)
 
     def _sweep_range(self, pw_from: int, pw_to: int):
@@ -269,6 +282,23 @@ class ServoControllerNode(Node):
         if msg.data:
             self.get_logger().info('Remote trigger received on /servo/trigger')
             threading.Thread(target=self._do_sweep, daemon=True).start()
+
+    def _rc_callback(self, msg: RCIn):
+        """Trigger na zboczu narastającym RC CH8: 1000→2000."""
+        ch_idx = RC_RELEASE_CHANNEL - 1
+        if ch_idx < 0 or ch_idx >= len(msg.channels):
+            return
+
+        pwm = int(msg.channels[ch_idx])
+        is_high = pwm >= RC_PWM_THRESHOLD
+
+        if is_high and not self._rc_channel_was_high:
+            self.get_logger().info(
+                f'RC CH{RC_RELEASE_CHANNEL} HIGH ({pwm} µs) → servo release'
+            )
+            threading.Thread(target=self._do_sweep, daemon=True).start()
+
+        self._rc_channel_was_high = is_high
 
     # ── Publisher helpers ─────────────────────────────────────────────────────
 

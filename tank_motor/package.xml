@@ -3,7 +3,7 @@
 <package format="3">
   <name>tank_motor</name>
   <version>0.0.0</version>
-  <description>Pakiet do sterowania silnikami przy użyciu lgpio (Raspberry Pi 5) i cmd_vel</description>
+  <description>Pakiet sterowania czołgiem: napęd L298N, chwytak stepper+MG995</description>
   <maintainer email="twoj@email.com">Twój Nick</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,6 +12,9 @@
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>dualtech_msgs</depend>
+
+  <exec_depend>ugv_detection</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

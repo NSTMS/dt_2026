@@ -3,6 +3,7 @@
 #include <lgpio.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 using namespace std::chrono_literals;
 
@@ -11,6 +12,14 @@ class Motor : public rclcpp::Node
 public:
     Motor() : Node("motor_controller")
     {
+        declare_parameter("pwm_frequency_hz", 5000.0);
+        declare_parameter("watchdog_timeout_sec", 0.8);
+        declare_parameter("min_duty_percent", 15.0);
+
+        pwm_frequency_ = get_parameter("pwm_frequency_hz").as_double();
+        watchdog_timeout_ = get_parameter("watchdog_timeout_sec").as_double();
+        min_duty_percent_ = get_parameter("min_duty_percent").as_double();
+
         left_pwm_pin = 17;
         left_dir_pin = 27;
         right_pwm_pin = 22;
@@ -33,13 +42,15 @@ public:
             std::bind(&Motor::KeyBoardCallback, this, std::placeholders::_1)
         );
 
-        // Timer bezpieczeństwa - sprawdza co 100ms czy mamy połączenie
         watchdog_timer = this->create_wall_timer(
             100ms, std::bind(&Motor::WatchdogCheck, this));
-   
-        last_msg_time = this->now();
 
-        RCLCPP_INFO(this->get_logger(), "Czołg gotowy. Watchdog aktywny.");
+        last_msg_time = this->now();
+        StopRobot();
+
+        RCLCPP_INFO(this->get_logger(),
+                    "Czołg gotowy. PWM=%.0f Hz, watchdog=%.1fs",
+                    pwm_frequency_, watchdog_timeout_);
     }
 
     ~Motor()
@@ -47,44 +58,69 @@ public:
         StopRobot();
         lgGpiochipClose(h);
     }
+
 private:
     int h;
     int left_pwm_pin, left_dir_pin, right_pwm_pin, right_dir_pin;
+    double pwm_frequency_;
+    double watchdog_timeout_;
+    double min_duty_percent_;
+
+    float last_left_ = 0.0f;
+    float last_right_ = 0.0f;
+
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr keyboardSub;
     rclcpp::TimerBase::SharedPtr watchdog_timer;
     rclcpp::Time last_msg_time;
 
-    void StopRobot() {
+    void StopRobot()
+    {
         lgTxPwm(h, left_pwm_pin, 0, 0, 0, 0);
         lgTxPwm(h, right_pwm_pin, 0, 0, 0, 0);
         lgGpioWrite(h, left_dir_pin, 0);
         lgGpioWrite(h, right_dir_pin, 0);
+        last_left_ = 0.0f;
+        last_right_ = 0.0f;
     }
 
-    void WatchdogCheck() {
-        // Jeśli nie było wiadomości przez ponad 0.5 sekundy - STOP
+    void WatchdogCheck()
+    {
         auto now = this->now();
-        if ((now - last_msg_time).seconds() > 0.5) {
-            StopRobot();
+        if ((now - last_msg_time).seconds() > watchdog_timeout_) {
+            if (last_left_ != 0.0f || last_right_ != 0.0f) {
+                StopRobot();
+            }
         }
     }
 
     void KeyBoardCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
     {
-        last_msg_time = this->now(); // Odśwież czas ostatniej wiadomości
+        last_msg_time = this->now();
 
         float linear = msg->linear.x;
         float angular = msg->angular.z;
 
-	float target_left  = linear + angular;
+        float target_left  = linear + angular;
         float target_right = linear - angular;
 
-        // Ograniczenie do zakresu -1.0 do 1.0
         target_left  = std::clamp(target_left, -1.0f, 1.0f);
         target_right = std::clamp(target_right, -1.0f, 1.0f);
 
+        if (std::abs(target_left - last_left_) < 0.001f
+            && std::abs(target_right - last_right_) < 0.001f) {
+            return;
+        }
+
+        if (std::abs(target_left) < 0.01f && std::abs(target_right) < 0.01f) {
+            StopRobot();
+            return;
+        }
+
         Send(left_pwm_pin, left_dir_pin, target_left);
         Send(right_pwm_pin, right_dir_pin, target_right);
+
+        last_left_ = target_left;
+        last_right_ = target_right;
     }
 
     void Send(int pwm_pin, int dir_pin, float value)
@@ -92,8 +128,12 @@ private:
         int forward = (value >= 0) ? 0 : 1;
         float duty_cycle = std::abs(value) * 100.0f;
 
+        if (duty_cycle > 0.0f && duty_cycle < min_duty_percent_) {
+            duty_cycle = static_cast<float>(min_duty_percent_);
+        }
+
         lgGpioWrite(h, dir_pin, forward);
-        lgTxPwm(h, pwm_pin, 1000.0f, duty_cycle, 0, 0);
+        lgTxPwm(h, pwm_pin, static_cast<float>(pwm_frequency_), duty_cycle, 0, 0);
     }
 };
 

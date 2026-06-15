@@ -8,17 +8,19 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 
 set(msg_files
-  "msg/Detection.msg"
+  "msg/ActuatorCmd.msg"
+  "msg/UavDetection.msg"
+  "msg/UgvDetection.msg"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${msg_files}
-  ${srv_files}
-  DEPENDENCIES sensor_msgs builtin_interfaces
+  DEPENDENCIES std_msgs sensor_msgs builtin_interfaces
 )
 
 if(BUILD_TESTING)
