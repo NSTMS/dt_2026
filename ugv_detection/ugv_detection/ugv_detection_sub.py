@@ -20,9 +20,10 @@ class UGVDetectionSubscriber(Node):
 
     def callback(self, msg: Detection):
         self.get_logger().info(
-            f'[ID {msg.object_id}] Typ: {msg.object_type} | QR: {msg.qr_value}'
+            f'Typ: {msg.object_type} | QR: {msg.qr_value}'
         )
-        frame = self.bridge.imgmsg_to_cv2(msg.object_image, desired_encoding='bgr8')
+        frame = self.bridge.compressed_imgmsg_to_cv2(msg.object_image, desired_encoding='bgr8')
+        cv2.imshow(msg.object_type, frame)
         cv2.waitKey(1)
 
 

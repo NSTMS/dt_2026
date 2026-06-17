@@ -11,10 +11,7 @@ from dualtech_detection.qr_decoder import decode_qr
 from dualtech_detection.types import DetectionCandidate
 from dualtech_msgs.msg import Detection
 from rclpy.node import Node
-from sensor_msgs.msg import Image
 from ugv_detection.topics import DETECTION_TOPIC
-
-CAMERA_IMAGE_TOPIC = '/camera/image_raw'
 
 TARGET_FPS = float(os.getenv('TARGET_FPS', '12'))
 CAMERA_WIDTH = int(os.getenv('CAMERA_WIDTH', '1280'))
@@ -108,7 +105,6 @@ class UgvDetectionNode(Node):
         super().__init__('ugv_detection_node')
 
         self._publisher = self.create_publisher(Detection, DETECTION_TOPIC, 10)
-        self._image_publisher = self.create_publisher(Image, CAMERA_IMAGE_TOPIC, 10)
         self._bridge = CvBridge()
         self._object_id = 0
         self._qr_tracker: dict[str, list] = {}
@@ -159,11 +155,6 @@ class UgvDetectionNode(Node):
             self._process_frame(frame)
 
     def _process_frame(self, frame) -> None:
-        image_msg = self._bridge.cv2_to_imgmsg(frame, encoding='bgr8')
-        image_msg.header.stamp = self.get_clock().now().to_msg()
-        image_msg.header.frame_id = 'ugv_camera'
-        self._image_publisher.publish(image_msg)
-
         qr = decode_qr(frame)
         if not qr or qr in self._qr_blacklist:
             return
@@ -219,9 +210,8 @@ class UgvDetectionNode(Node):
 
     def _publish_confirmed(self, candidate: DetectionCandidate, annotated, qr: str) -> None:
         msg = Detection()
-        msg.object_id = self._object_id
         msg.object_type = candidate.class_name
-        image_msg = self._bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+        image_msg = self._bridge.cv2_to_compressed_imgmsg(annotated)
         image_msg.header.stamp = self.get_clock().now().to_msg()
         image_msg.header.frame_id = 'ugv_camera'
         msg.object_image = image_msg
@@ -229,7 +219,7 @@ class UgvDetectionNode(Node):
 
         self._publisher.publish(msg)
         self._object_id += 1
-        self.get_logger().info(f'Publikacja [{msg.object_type}] id={msg.object_id}')
+        self.get_logger().info(f'Publikacja [{msg.object_type}] id={self._object_id}')
 
 
 def main(args=None):
