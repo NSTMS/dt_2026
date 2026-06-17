@@ -14,6 +14,7 @@ find_package(builtin_interfaces REQUIRED)
 
 set(msg_files
   "msg/ActuatorCmd.msg"
+  "msg/Detection.msg"
   "msg/UavDetection.msg"
   "msg/UgvDetection.msg"
 )

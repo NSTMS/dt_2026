@@ -19,6 +19,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument('class_whitelist', default_value=''),
             DeclareLaunchArgument('class_blacklist', default_value=''),
             DeclareLaunchArgument(
+                'class_name_map',
+                default_value=(
+                    'tico:maulch,polonez:polonez,lambo:ferrari,bus:autobus,tir:tir,'
+                    'czolg_zielony:T-90,czolg_bialy:T-62,wyrzutnia:pansir,'
+                    'humvee:humvee,radar:radar'
+                ),
+            ),
+            DeclareLaunchArgument(
                 'yolo_model',
                 default_value=PathJoinSubstitution(
                     [FindPackageShare('ugv_detection'), 'yolov8n_ground.pt']
@@ -44,6 +52,7 @@ def generate_launch_description() -> LaunchDescription:
             SetEnvironmentVariable('QR_CONFIRM_COUNT', LaunchConfiguration('qr_confirm_count')),
             SetEnvironmentVariable('CLASS_WHITELIST', LaunchConfiguration('class_whitelist')),
             SetEnvironmentVariable('CLASS_BLACKLIST', LaunchConfiguration('class_blacklist')),
+            SetEnvironmentVariable('CLASS_NAME_MAP', LaunchConfiguration('class_name_map')),
             SetEnvironmentVariable('YOLO_MODEL', LaunchConfiguration('yolo_model')),
             Node(
                 package='ugv_detection',

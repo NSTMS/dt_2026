@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from dataclasses import replace
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
@@ -8,10 +9,10 @@ from cv_bridge import CvBridge
 from dualtech_detection.pipeline import GStreamerFrameStream, YoloDetector
 from dualtech_detection.qr_decoder import decode_qr
 from dualtech_detection.types import DetectionCandidate
-from dualtech_msgs.msg import UgvDetection
+from dualtech_msgs.msg import Detection
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from ugv_detection.topics import UGV_DETECTION_TOPIC
+from ugv_detection.topics import DETECTION_TOPIC
 
 CAMERA_IMAGE_TOPIC = '/camera/image_raw'
 
@@ -30,6 +31,36 @@ CLASS_WHITELIST = {
 CLASS_BLACKLIST = {
     name.strip() for name in os.getenv('CLASS_BLACKLIST', '').split(',') if name.strip()
 }
+_DEFAULT_CLASS_NAME_MAP = {
+    'tico': 'maulch',
+    'polonez': 'polonez',
+    'lambo': 'ferrari',
+    'bus': 'autobus',
+    'tir': 'tir',
+    'czolg_zielony': 'T-90',
+    'czolg_bialy': 'T-62',
+    'wyrzutnia': 'pansir',
+    'humvee': 'humvee',
+    'radar': 'radar',
+}
+
+
+def _parse_class_name_map(raw: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for pair in raw.split(','):
+        pair = pair.strip()
+        if not pair or ':' not in pair:
+            continue
+        old_name, new_name = pair.split(':', 1)
+        old_name = old_name.strip()
+        new_name = new_name.strip()
+        if old_name and new_name:
+            result[old_name] = new_name
+    return result
+
+
+CLASS_NAME_MAP = dict(_DEFAULT_CLASS_NAME_MAP)
+CLASS_NAME_MAP.update(_parse_class_name_map(os.getenv('CLASS_NAME_MAP', '')))
 YOLO_MODEL = os.getenv(
     'YOLO_MODEL',
     os.path.join(get_package_share_directory('ugv_detection'), 'yolov8n_ground.pt'),
@@ -76,7 +107,7 @@ class UgvDetectionNode(Node):
     def __init__(self):
         super().__init__('ugv_detection_node')
 
-        self._publisher = self.create_publisher(UgvDetection, UGV_DETECTION_TOPIC, 10)
+        self._publisher = self.create_publisher(Detection, DETECTION_TOPIC, 10)
         self._image_publisher = self.create_publisher(Image, CAMERA_IMAGE_TOPIC, 10)
         self._bridge = CvBridge()
         self._object_id = 0
@@ -91,7 +122,7 @@ class UgvDetectionNode(Node):
         )
 
         self.get_logger().info(
-            f'UGV: {UGV_DETECTION_TOPIC}, kamera {CAMERA_WIDTH}x{CAMERA_HEIGHT}, '
+            f'UGV: {DETECTION_TOPIC}, kamera {CAMERA_WIDTH}x{CAMERA_HEIGHT}, '
             f'publikacja gdy ta sama klasa per QR {QR_CONFIRM_COUNT}x '
             f'(conf>={YOLO_CONFIDENCE:.2f})'
         )
@@ -106,6 +137,7 @@ class UgvDetectionNode(Node):
             self.get_logger().info(f'CLASS_WHITELIST={sorted(CLASS_WHITELIST)}')
         if CLASS_BLACKLIST:
             self.get_logger().info(f'CLASS_BLACKLIST={sorted(CLASS_BLACKLIST)}')
+        self.get_logger().info(f'CLASS_NAME_MAP={CLASS_NAME_MAP}')
 
     def start(self) -> None:
         self._stream.start()
@@ -138,6 +170,7 @@ class UgvDetectionNode(Node):
 
         candidates, annotated = self._detector.detect(frame)
         candidates = self._filter_classes(candidates)
+        candidates = self._remap_classes(candidates)
         candidates = [c for c in candidates if c.confidence >= YOLO_CONFIDENCE]
         if not candidates:
             return
@@ -152,6 +185,14 @@ class UgvDetectionNode(Node):
         if CLASS_BLACKLIST:
             filtered = [c for c in filtered if c.class_name not in CLASS_BLACKLIST]
         return filtered
+
+    def _remap_classes(self, candidates: list[DetectionCandidate]) -> list[DetectionCandidate]:
+        if not CLASS_NAME_MAP:
+            return candidates
+        return [
+            replace(c, class_name=CLASS_NAME_MAP.get(c.class_name, c.class_name))
+            for c in candidates
+        ]
 
     def _update_qr_tracker(
         self,
@@ -177,12 +218,13 @@ class UgvDetectionNode(Node):
             del self._qr_tracker[qr]
 
     def _publish_confirmed(self, candidate: DetectionCandidate, annotated, qr: str) -> None:
-        msg = UgvDetection()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'ugv_camera'
+        msg = Detection()
         msg.object_id = self._object_id
         msg.object_type = candidate.class_name
-        msg.object_image = self._bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+        image_msg = self._bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+        image_msg.header.stamp = self.get_clock().now().to_msg()
+        image_msg.header.frame_id = 'ugv_camera'
+        msg.object_image = image_msg
         msg.qr_value = qr
 
         self._publisher.publish(msg)

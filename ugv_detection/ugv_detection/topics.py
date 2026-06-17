@@ -1,1 +1,1 @@
-UGV_DETECTION_TOPIC = '/ugv/detection'
+DETECTION_TOPIC = '/detection'

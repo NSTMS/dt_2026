@@ -190,7 +190,7 @@ private:
 
         if (new_target != old_target) {
             target_step_.store(new_target);
-            RCLCPP_INFO(get_logger(),
+            RCLCPP_DEBUG(get_logger(),
                         "Stepper → cel: %d kroków (obecnie: %d)", new_target, current_step_);
         }
 

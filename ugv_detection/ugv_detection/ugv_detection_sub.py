@@ -2,23 +2,23 @@ import cv2
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from ugv_detection.topics import UGV_DETECTION_TOPIC
-from dualtech_msgs.msg import UgvDetection
+from ugv_detection.topics import DETECTION_TOPIC
+from dualtech_msgs.msg import Detection
 
 
 class UGVDetectionSubscriber(Node):
     def __init__(self):
         super().__init__('ugv_detection_subscriber')
         self.subscription = self.create_subscription(
-            UgvDetection,
-            UGV_DETECTION_TOPIC,
+            Detection,
+            DETECTION_TOPIC,
             self.callback,
             10,
         )
         self.bridge = CvBridge()
-        self.get_logger().info(f'Subskrybent UGV na {UGV_DETECTION_TOPIC}')
+        self.get_logger().info(f'Subskrybent UGV na {DETECTION_TOPIC}')
 
-    def callback(self, msg: UgvDetection):
+    def callback(self, msg: Detection):
         self.get_logger().info(
             f'[ID {msg.object_id}] Typ: {msg.object_type} | QR: {msg.qr_value}'
         )
