@@ -20,17 +20,23 @@ static constexpr int    SERVO_PULSE_MIN_US     = 1'000;
 static constexpr int    SERVO_PULSE_MAX_US     = 2'000;
 static constexpr int    SERVO_FREQUENCY_HZ     = 50;
 
-static constexpr int STEPPER_STEPS_PER_REV   = 4096;
-static constexpr int STEPPER_MAX_STEPS       = STEPPER_STEPS_PER_REV;
-static constexpr int STEPPER_SEQ_LENGTH      = 8;
-static constexpr int STEPPER_PIN_COUNT       = 4;
-static constexpr int STEPPER_TIMER_US        = 2'000;
+static constexpr int STEPPER_HALF_STEPS_PER_REV = 4096;
+static constexpr int STEPPER_FULL_STEPS_PER_REV = 2048;
+static constexpr int STEPPER_HALF_SEQ_LENGTH    = 8;
+static constexpr int STEPPER_FULL_SEQ_LENGTH    = 4;
+static constexpr int STEPPER_PIN_COUNT          = 4;
+static constexpr int DEFAULT_STEP_DELAY_US      = 900;
+static constexpr int MAX_STEPS_PER_TICK         = 4;
 
 static constexpr int STEPPER_PINS[STEPPER_PIN_COUNT]  = {16, 26, 20, 21};
 
-static constexpr int HALF_STEP_SEQ[STEPPER_SEQ_LENGTH][STEPPER_PIN_COUNT] = {
+static constexpr int HALF_STEP_SEQ[STEPPER_HALF_SEQ_LENGTH][STEPPER_PIN_COUNT] = {
     {1, 0, 0, 0}, {1, 1, 0, 0}, {0, 1, 0, 0}, {0, 1, 1, 0},
     {0, 0, 1, 0}, {0, 0, 1, 1}, {0, 0, 0, 1}, {1, 0, 0, 1}
+};
+
+static constexpr int FULL_STEP_SEQ[STEPPER_FULL_SEQ_LENGTH][STEPPER_PIN_COUNT] = {
+    {1, 1, 0, 0}, {0, 1, 1, 0}, {0, 0, 1, 1}, {1, 0, 0, 1}
 };
 
 static constexpr char ACTUATOR_CMD_TOPIC[]   = "/actuator_cmd";
@@ -38,7 +44,7 @@ static constexpr int  SUBSCRIPTION_QUEUE     = 10;
 
 class ActuatorController : public rclcpp::Node {
 public:
-    ActuatorController() : Node("actuator_controller") {
+    ActuatorController() : Node("actuator_node") {
         declare_parameters();
         open_gpio_chip();
         claim_stepper_pins();
@@ -60,12 +66,12 @@ private:
     int gpio_handle_  = -1;
     int chip_id_      = DEFAULT_GPIOCHIP;
 
-    double min_servo_angle_ = 30.0;
-    double max_servo_angle_ = 120.0;
-    double home_arm_angle_  = 75.0;
+    double home_arm_angle_  = 90.0;
     bool   invert_servo_    = true;
     bool   reverse_stepper_ = false;
-    int    max_stepper_steps_ = STEPPER_MAX_STEPS;
+    bool   use_half_step_   = true;
+    int    step_delay_us_   = DEFAULT_STEP_DELAY_US;
+    int    seq_length_      = STEPPER_HALF_SEQ_LENGTH;
 
     int current_step_ = 0;
     int step_index_   = 0;
@@ -77,20 +83,20 @@ private:
 
     void declare_parameters() {
         declare_parameter("gpiochip",          DEFAULT_GPIOCHIP);
-        declare_parameter("min_servo_angle",   min_servo_angle_);
-        declare_parameter("max_servo_angle",   max_servo_angle_);
         declare_parameter("home_arm_angle",    home_arm_angle_);
         declare_parameter("invert_servo",      invert_servo_);
         declare_parameter("reverse_stepper",   reverse_stepper_);
-        declare_parameter("max_stepper_steps", static_cast<double>(STEPPER_MAX_STEPS));
+        declare_parameter("use_half_step",     use_half_step_);
+        declare_parameter("step_delay_us",     static_cast<double>(DEFAULT_STEP_DELAY_US));
 
         chip_id_           = get_parameter("gpiochip").as_int();
-        min_servo_angle_   = get_parameter("min_servo_angle").as_double();
-        max_servo_angle_   = get_parameter("max_servo_angle").as_double();
         home_arm_angle_    = get_parameter("home_arm_angle").as_double();
         invert_servo_      = get_parameter("invert_servo").as_bool();
         reverse_stepper_   = get_parameter("reverse_stepper").as_bool();
-        max_stepper_steps_ = static_cast<int>(get_parameter("max_stepper_steps").as_double());
+        use_half_step_     = get_parameter("use_half_step").as_bool();
+        step_delay_us_     = std::max(400, static_cast<int>(get_parameter("step_delay_us").as_double()));
+
+        seq_length_    = use_half_step_ ? STEPPER_HALF_SEQ_LENGTH : STEPPER_FULL_SEQ_LENGTH;
     }
 
     void open_gpio_chip() {
@@ -109,7 +115,10 @@ private:
                 "claim stepper pin GPIO " + std::to_string(pin));
         }
         deenergise_stepper();
-        RCLCPP_INFO(get_logger(), "Stepper (szczęki) — piny zainicjalizowane.");
+        RCLCPP_INFO(get_logger(),
+                    "Stepper (szczęki) — %s, opóźnienie %d µs, bez limitu kroków",
+                    use_half_step_ ? "half-step" : "full-step",
+                    step_delay_us_);
     }
 
     void claim_servo_pin() {
@@ -117,9 +126,10 @@ private:
             lgGpioClaimOutput(gpio_handle_, 0, SERVO_GPIO_PIN, 0),
             "claim servo pin GPIO " + std::to_string(SERVO_GPIO_PIN));
         set_servo_angle(home_arm_angle_);
+        last_arm_angle_ = home_arm_angle_;
         RCLCPP_INFO(get_logger(),
-                    "MG995 (ramię) — GPIO %d, zakres %.0f°–%.0f°, invert=%s",
-                    SERVO_GPIO_PIN, min_servo_angle_, max_servo_angle_,
+                    "MG995 (ramię) — GPIO %d, bez limitów kąta, invert=%s",
+                    SERVO_GPIO_PIN,
                     invert_servo_ ? "tak" : "nie");
     }
 
@@ -131,13 +141,12 @@ private:
 
     void create_stepper_timer() {
         stepper_timer_ = create_wall_timer(
-            std::chrono::microseconds(STEPPER_TIMER_US),
+            std::chrono::microseconds(step_delay_us_),
             std::bind(&ActuatorController::advance_stepper, this));
     }
 
     void on_actuator_cmd(const dualtech_msgs::msg::ActuatorCmd::SharedPtr msg) {
-        const int new_target = std::clamp(
-            static_cast<int>(msg->jaw_position), 0, max_stepper_steps_);
+        const int new_target = static_cast<int>(msg->jaw_position);
         const int old_target = target_step_.load();
 
         if (new_target != old_target) {
@@ -146,7 +155,7 @@ private:
                         "Stepper → cel: %d kroków (obecnie: %d)", new_target, current_step_);
         }
 
-        const double angle = std::clamp(msg->arm_angle_deg, min_servo_angle_, max_servo_angle_);
+        const double angle = msg->arm_angle_deg;
         if (std::abs(angle - last_arm_angle_) > 0.1) {
             set_servo_angle(angle);
             last_arm_angle_ = angle;
@@ -154,10 +163,7 @@ private:
     }
 
     void set_servo_angle(double angle) {
-        const double span = max_servo_angle_ - min_servo_angle_;
-        double normalized = (span > 0.0)
-            ? (angle - min_servo_angle_) / span
-            : 0.0;
+        double normalized = angle / 180.0;
 
         if (invert_servo_) {
             normalized = 1.0 - normalized;
@@ -187,21 +193,34 @@ private:
             return;
         }
 
-        const bool forward = current_step_ < target;
-        if (forward == !reverse_stepper_) {
-            step_index_ = (step_index_ + 1) % STEPPER_SEQ_LENGTH;
-            ++current_step_;
-        } else {
-            step_index_ = (step_index_ - 1 + STEPPER_SEQ_LENGTH) % STEPPER_SEQ_LENGTH;
-            --current_step_;
+        const int remaining = std::abs(target - current_step_);
+        const int burst = std::min(
+            MAX_STEPS_PER_TICK,
+            std::max(1, remaining / 128));
+
+        for (int n = 0; n < burst && current_step_ != target; ++n) {
+            step_once_toward(target);
         }
 
         apply_step_sequence();
     }
 
+    void step_once_toward(int target) {
+        const bool forward = current_step_ < target;
+        if (forward == !reverse_stepper_) {
+            step_index_ = (step_index_ + 1) % seq_length_;
+            ++current_step_;
+        } else {
+            step_index_ = (step_index_ - 1 + seq_length_) % seq_length_;
+            --current_step_;
+        }
+    }
+
     void apply_step_sequence() {
         for (int i = 0; i < STEPPER_PIN_COUNT; ++i) {
-            const int level = HALF_STEP_SEQ[step_index_][i];
+            const int level = use_half_step_
+                ? HALF_STEP_SEQ[step_index_][i]
+                : FULL_STEP_SEQ[step_index_][i];
             const int rc = lgGpioWrite(gpio_handle_, STEPPER_PINS[i], level);
             if (rc < 0) {
                 RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,

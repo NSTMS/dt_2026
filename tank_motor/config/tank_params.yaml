@@ -1,21 +1,22 @@
 actuator_node:
   ros__parameters:
-    max_stepper_steps: 4096.0
-    min_servo_angle: 30.0
-    max_servo_angle: 120.0
-    home_arm_angle: 75.0
+    step_delay_us: 2400.0
+    use_half_step: true
+    min_servo_angle: 0.0
+    max_servo_angle: 180.0
+    home_arm_angle: 90.0
     invert_servo: true
     reverse_stepper: false
 
 keyboard_controller:
   ros__parameters:
-    max_stepper_steps: 4096.0
-    min_servo_angle: 30.0
-    max_servo_angle: 120.0
-    home_arm_angle: 75.0
-    stepper_increment: 128.0
+    min_servo_angle: 0.0
+    max_servo_angle: 180.0
+    home_arm_angle: 90.0
+    stepper_increment: 512.0
+    stepper_hold_steps_per_tick: 64.0
     servo_increment: 5.0
-    cmd_vel_rate_hz: 10.0
+    cmd_vel_rate_hz: 20.0
 
 motor:
   ros__parameters:

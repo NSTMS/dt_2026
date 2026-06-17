@@ -75,8 +75,8 @@ private:
 
     void StopRobot()
     {
-        lgTxPwm(h, left_pwm_pin, 0, 0, 0, 0);
-        lgTxPwm(h, right_pwm_pin, 0, 0, 0, 0);
+        lgTxPwm(h, left_pwm_pin, static_cast<float>(pwm_frequency_), 0.0f, 0, 0);
+        lgTxPwm(h, right_pwm_pin, static_cast<float>(pwm_frequency_), 0.0f, 0, 0);
         lgGpioWrite(h, left_dir_pin, 0);
         lgGpioWrite(h, right_dir_pin, 0);
         last_left_ = 0.0f;
