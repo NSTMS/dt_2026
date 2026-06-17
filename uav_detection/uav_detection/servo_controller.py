@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """
 ROS2 Node: servo_controller
-Controls a TowerPro SG90-HV servo on GPIO18 (Pin 12) using lgpio (RPi5 compatible).
+Controls a TowerPro SG90-HV 360° continuous-rotation servo on GPIO17 (Pin 11)
+using lgpio (RPi5 compatible).
 Keyboard trigger reads directly from stdin — works over SSH with no display needed.
 
+Continuous-rotation servo model:
+  Unlike a positional servo, a 360° continuous-rotation servo has NO fixed angle.
+  The pulse width sets the rotation DIRECTION and SPEED:
+    pw == NEUTRAL  → stopped (servo holds still)
+    pw  > NEUTRAL  → rotate one way   (speed ∝ pw − NEUTRAL)
+    pw  < NEUTRAL  → rotate other way (speed ∝ NEUTRAL − pw)
+  A "sweep" is therefore: spin up to a rotation speed, then spin back down to a
+  stop — the time spent rotating determines how far the output shaft travels.
+
 Wiring:
-  - Servo control wire → GPIO18 (Physical Pin 12)
+  - Servo control wire → GPIO17 (Physical Pin 11)
   - Servo power        → external 5V supply
   - Common ground      → shared with RPi
 
@@ -30,35 +40,51 @@ from std_msgs.msg import Bool, String
 
 # ─── USER CONSTANTS ────────────────────────────────────────────────────────────
 
-TRIGGER_KEY     = ' '       # Keyboard key that triggers the sweep (single char).
+TRIGGER_KEY     = ' '       # Key that starts a FORWARD sweep (single char).
                             # Examples:
                             #   ' '  → Spacebar
                             #   '\n' → Enter
                             #   's'  → s key
 
-REVERSE_KEY     = '\n'
-SERVO_GPIO      = 17       # GPIO18 = Physical Pin 12
+REVERSE_KEY     = 'c'      # Key that starts a REVERSE sweep — only accepted
+                            # when the servo is currently 'opened'.
+
+SERVO_GPIO      = 17        # GPIO17 = Physical Pin 11
+
+# ── Logical servo positions ────────────────────────────────────────────────────
+#    Track the mechanism state so sweeps are only triggered when valid:
+#      forward sweep OPENS  (closed → opened)
+#      reverse sweep CLOSES (opened → closed)
+POSITION_OPENED = 'opened'
+POSITION_CLOSED = 'closed'
 
 # ── Servo pulse width limits (microseconds) ────────────────────────────────────
 #    Do not exceed the hardware limits of the SG90-HV (500–2500 µs).
-SERVO_PW_MIN    = 500       # Absolute minimum  → full counter-clockwise
-SERVO_PW_MAX    = 2500      # Absolute maximum  → full clockwise
+SERVO_PW_MIN    = 500       # Absolute minimum pulse width
+SERVO_PW_MAX    = 2500      # Absolute maximum pulse width
 
-# ── Home position ──────────────────────────────────────────────────────────────
-#    Where the servo parks on startup and returns after every sweep.
-SERVO_HOME_PW   = 1500      # Home = fully clockwise
+# ── Neutral / stop ─────────────────────────────────────────────────────────────
+#    Pulse width at which the continuous-rotation servo stays still.
+SERVO_NEUTRAL_PW = 1500
 
-# ── Sweep range ────────────────────────────────────────────────────────────────
-#    Sweep profile: HOME → SWEEP_START → SWEEP_END → HOME
-SWEEP_START_PW  = 1500      # Sweep start position (fully clockwise)
-SWEEP_END_PW    = 1800    # Sweep end position   (fully counter-clockwise)
+# ── Sweep speed / direction ────────────────────────────────────────────────────
+#    Pulse width applied during a forward sweep. The offset from neutral sets the
+#    rotation speed; the sign of the offset sets the direction.
+#    The reverse sweep mirrors this around neutral automatically, so reverse spins
+#    the opposite way at the same speed.
+#       forward speed pw = SWEEP_SPEED_PW                       (e.g. 1800)
+#       reverse speed pw = 2*SERVO_NEUTRAL_PW − SWEEP_SPEED_PW  (e.g. 1200)
+SWEEP_SPEED_PW   = 1800
 
-# ── Motion parameters ──────────────────────────────────────────────────────────
-SWEEP_STEPS     = 43      # Steps per pass — higher = smoother
-SWEEP_DELAY     = 0.015     # Seconds between steps (~1.5 s per pass)
+# ── Motion profile ─────────────────────────────────────────────────────────────
+#    Each sweep accelerates from a stop up to SWEEP_SPEED_PW, then decelerates
+#    back to a stop. RAMP_STEPS × RAMP_DELAY ≈ duration of one accel/decel ramp.
+#    Higher RAMP_STEPS = smoother; the total rotated arc is set by the ramp time.
+SWEEP_RAMP_STEPS = 43       # Steps per ramp — higher = smoother
+SWEEP_RAMP_DELAY = 0.015    # Seconds between steps (~0.65 s per ramp)
 
 # ── lgpio PWM settings ─────────────────────────────────────────────────────────
-PWM_FREQUENCY   = 50        # Hz — standard servo frequency
+PWM_FREQUENCY    = 50       # Hz — standard servo frequency
 
 # ── RC trigger (RadioMaster Pocket → mavros → CH8) ─────────────────────────────
 RC_RELEASE_CHANNEL = int(os.getenv('RC_RELEASE_CHANNEL', '8'))   # kanał 1..18
@@ -116,18 +142,35 @@ class StdinKeyReader:
 
 class ServoControllerNode(Node):
     """
-    ROS2 node that:
-      - Watches stdin for a keypress and triggers a servo sweep.
+    ROS2 node that drives a 360° continuous-rotation servo. It tracks a logical
+    position ('opened'/'closed') so sweeps are only triggered when valid:
+      - FORWARD sweep = OPEN  (only when closed) on TRIGGER_KEY / /servo/trigger /
+        RC CH8 rising edge.
+      - REVERSE sweep = CLOSE (only when opened) on REVERSE_KEY / RC CH8 falling
+        edge.
       - Publishes sweep status on  /servo/status (std_msgs/String).
       - Publishes sweep active flag on /servo/active (std_msgs/Bool).
-      - Subscribes to /servo/trigger (std_msgs/Bool) for remote triggering.
-      - Subscribes to /mavros/rc/in — rising edge on RC CH8 triggers sweep.
 
-    Sweep profile:  HOME → SWEEP_START → SWEEP_END → HOME
+    Sweep profile:  STOP → SPEED → STOP   (ramp up, ramp down)
     """
 
     def __init__(self):
         super().__init__('servo_controller')
+
+        # ── Parameters ───────────────────────────────────────────────────────
+        #    Current servo position = logical state 'opened' or 'closed'. It gates
+        #    which sweep is allowed: a forward sweep OPENS (only when closed) and a
+        #    reverse sweep CLOSES (only when opened). Set the startup state here so
+        #    it matches the servo's real position. Configurable via launch.
+        self.declare_parameter('servo_position', POSITION_CLOSED)
+        position = str(self.get_parameter('servo_position').value).lower()
+        if position not in (POSITION_OPENED, POSITION_CLOSED):
+            self.get_logger().warn(
+                f"Invalid servo_position '{position}' — defaulting to '{POSITION_CLOSED}'"
+            )
+            position = POSITION_CLOSED
+        self._position = position
+        self._neutral_pw = SERVO_NEUTRAL_PW
 
         # ── lgpio setup ──────────────────────────────────────────────────────
         try:
@@ -136,11 +179,11 @@ class ServoControllerNode(Node):
             self._chip = lgpio.gpiochip_open(0)   # RPi4 and older: gpiochip0
 
         lgpio.gpio_claim_output(self._chip, SERVO_GPIO)
-        self._set_servo(SERVO_HOME_PW)
-        time.sleep(0.5)       # Allow servo to physically reach home before cutting signal
-        self._servo_off()     # Cut PWM — servo holds position passively, stops jittering
+        self._set_servo(self._neutral_pw)
+        time.sleep(0.5)       # Allow servo to settle at a stop before cutting signal
+        self._servo_off()     # Cut PWM — continuous servo stays still, stops jittering
         self.get_logger().info(
-            f'Servo initialised on GPIO{SERVO_GPIO} — home: {SERVO_HOME_PW} µs'
+            f'Servo initialised on GPIO{SERVO_GPIO} — neutral/stop: {self._neutral_pw} µs'
         )
 
         # ── Publishers ───────────────────────────────────────────────────────
@@ -161,11 +204,17 @@ class ServoControllerNode(Node):
         self._key_reader.start()
 
         trigger_display = 'SPACE' if TRIGGER_KEY == ' ' else repr(TRIGGER_KEY)
-        self.get_logger().info(f'Keyboard trigger: [{trigger_display}]  |  Ctrl+C to exit')
+        reverse_display = 'ENTER' if REVERSE_KEY == '\n' else repr(REVERSE_KEY)
         self.get_logger().info(
-            f'Sweep: HOME({SERVO_HOME_PW}µs) → '
-            f'START({SWEEP_START_PW}µs) → END({SWEEP_END_PW}µs) → HOME({SERVO_HOME_PW}µs)'
+            f'Keys: forward=[{trigger_display}]  reverse=[{reverse_display}]  |  Ctrl+C to exit'
         )
+        self.get_logger().info(
+            f'Forward sweep (OPEN):  STOP({self._neutral_pw}µs) → SPEED({SWEEP_SPEED_PW}µs) → STOP'
+        )
+        self.get_logger().info(
+            f'Reverse sweep (CLOSE): STOP({self._neutral_pw}µs) → SPEED({self._reverse_speed_pw()}µs) → STOP'
+        )
+        self.get_logger().info(f'Servo position at startup: {self._position.upper()}')
         self.get_logger().info(
             f'RC trigger: CH{RC_RELEASE_CHANNEL} '
             f'({RC_PWM_OFF}=OFF, {RC_PWM_ON}=ON, próg={RC_PWM_THRESHOLD})'
@@ -182,10 +231,19 @@ class ServoControllerNode(Node):
         """Stop sending PWM pulses (servo relaxes, saves power)."""
         lgpio.tx_servo(self._chip, SERVO_GPIO, 0, PWM_FREQUENCY)
 
+    def _reverse_speed_pw(self) -> int:
+        """Pulse width that spins the servo the opposite way at the same speed."""
+        return 2 * self._neutral_pw - SWEEP_SPEED_PW
+
     # ── Sweep logic ──────────────────────────────────────────────────────────
 
-    def _do_sweep(self):
-        """Execute sweep: HOME → SWEEP_START → SWEEP_END → HOME."""
+    def _run_sweep(self, speed_pw: int, label: str, new_position: str):
+        """
+        Execute one sweep on the continuous-rotation servo:
+        ramp from a stop up to `speed_pw`, then ramp back down to a stop.
+        The direction is encoded in `speed_pw` (offset/sign relative to neutral).
+        On success the logical position is updated to `new_position`.
+        """
         with self._sweep_lock:
             if self._sweep_running:
                 self.get_logger().warn('Sweep already in progress — ignoring.')
@@ -193,24 +251,22 @@ class ServoControllerNode(Node):
             self._sweep_running = True
 
         self._publish_active(True)
-        self._publish_status('Sweep started')
-        self.get_logger().info('Starting sweep')
+        self._publish_status(f'{label} sweep started')
+        self.get_logger().info(f'Starting {label} sweep')
 
+        completed = False
         try:
-            if SERVO_HOME_PW != SWEEP_START_PW:
-                self.get_logger().info(f'Moving to sweep start ({SWEEP_START_PW} µs)')
-                self._sweep_range(SERVO_HOME_PW, SWEEP_START_PW)
+            self.get_logger().info(f'Accelerating to {speed_pw} µs')
+            self._ramp(self._neutral_pw, speed_pw)
 
-            self.get_logger().info(f'Sweeping {SWEEP_START_PW} µs → {SWEEP_END_PW} µs')
-            self._sweep_range(SWEEP_START_PW, SWEEP_END_PW)
+            self.get_logger().info(f'Decelerating to stop ({self._neutral_pw} µs)')
+            self._ramp(speed_pw, self._neutral_pw)
 
-            self.get_logger().info(f'Returning home ({SERVO_HOME_PW} µs)')
-            self._sweep_range(SWEEP_END_PW, SERVO_HOME_PW)
-
-            time.sleep(0.3)       # Let servo settle at home position
+            time.sleep(0.3)       # Let servo settle at a stop
             self._servo_off()     # Cut PWM — stops jitter while idle
-            self._publish_status('Sweep complete')
-            self.get_logger().info('Sweep complete — servo at home, PWM off')
+            completed = True
+            self._publish_status(f'{label} sweep complete')
+            self.get_logger().info(f'{label} sweep complete — servo stopped, PWM off')
 
         except Exception as e:
             self.get_logger().error(f'Sweep error: {e}')
@@ -219,50 +275,43 @@ class ServoControllerNode(Node):
         finally:
             with self._sweep_lock:
                 self._sweep_running = False
-
-    def _do_sweep_reverse(self):
-        """Execute sweep: HOME → SWEEP_START → SWEEP_END → HOME."""
-        with self._sweep_lock:
-            if self._sweep_running:
-                self.get_logger().warn('Sweep already in progress — ignoring.')
-                return
-            self._sweep_running = True
-
-        self._publish_active(True)
-        self._publish_status('Sweep started')
-        self.get_logger().info('Starting sweep')
-
-        try:
-            if SERVO_HOME_PW != SWEEP_START_PW:
-                self.get_logger().info(f'Moving to sweep start ({SWEEP_START_PW} µs)')
-                self._sweep_range(SERVO_HOME_PW, SWEEP_START_PW)
-
-            self.get_logger().info(f'Reverse sweep {SWEEP_START_PW} µs → {SWEEP_END_PW} µs')
-            self._sweep_range(SWEEP_START_PW, SWEEP_END_PW)
-
-            self.get_logger().info(f'Returning home ({SERVO_HOME_PW} µs)')
-            self._sweep_range(SWEEP_END_PW, SERVO_HOME_PW)
-
-            time.sleep(0.3)       # Let servo settle at home position
-            self._servo_off()     # Cut PWM — stops jitter while idle
-            self._publish_status('Sweep complete')
-            self.get_logger().info('Sweep complete — servo at home, PWM off')
-
-        except Exception as e:
-            self.get_logger().error(f'Sweep error: {e}')
-            self._publish_status(f'Sweep error: {e}')
-
-        finally:
-            with self._sweep_lock:
-                self._sweep_running = False
+                if completed:
+                    # Advance the logical position so the opposite sweep is enabled.
+                    self._position = new_position
+            if completed:
+                self.get_logger().info(f'Servo position: {new_position.upper()}')
             self._publish_active(False)
 
-    def _sweep_range(self, pw_from: int, pw_to: int):
-        """Smoothly interpolate servo from pw_from to pw_to."""
-        for step in range(SWEEP_STEPS + 1):
-            pw = int(pw_from + (pw_to - pw_from) * step / SWEEP_STEPS)
+    def _do_forward_sweep(self):
+        """Forward sweep = OPEN — only valid when the servo is currently closed."""
+        with self._sweep_lock:
+            allowed = (self._position == POSITION_CLOSED) and not self._sweep_running
+        if not allowed:
+            self.get_logger().warn(
+                'Forward (open) ignored — servo is not closed.'
+            )
+            self._publish_status('Forward not allowed (already opened)')
+            return
+        self._run_sweep(SWEEP_SPEED_PW, 'forward', new_position=POSITION_OPENED)
+
+    def _do_reverse_sweep(self):
+        """Reverse sweep = CLOSE — only valid when the servo is currently opened."""
+        with self._sweep_lock:
+            allowed = (self._position == POSITION_OPENED) and not self._sweep_running
+        if not allowed:
+            self.get_logger().warn(
+                'Reverse (close) ignored — servo is not opened.'
+            )
+            self._publish_status('Reverse not allowed (already closed)')
+            return
+        self._run_sweep(self._reverse_speed_pw(), 'reverse', new_position=POSITION_CLOSED)
+
+    def _ramp(self, pw_from: int, pw_to: int):
+        """Smoothly interpolate the servo drive signal from pw_from to pw_to."""
+        for step in range(SWEEP_RAMP_STEPS + 1):
+            pw = int(pw_from + (pw_to - pw_from) * step / SWEEP_RAMP_STEPS)
             self._set_servo(pw)
-            time.sleep(SWEEP_DELAY)
+            time.sleep(SWEEP_RAMP_DELAY)
 
     # ── Callbacks ────────────────────────────────────────────────────────────
 
@@ -271,20 +320,24 @@ class ServoControllerNode(Node):
         if char == '\x03':          # Ctrl+C — propagate graceful shutdown
             raise KeyboardInterrupt
         if char == TRIGGER_KEY:
-            self.get_logger().info('Trigger key pressed')
-            threading.Thread(target=self._do_sweep, daemon=True).start()
-        if char == REVERSE_KEY:
+            self.get_logger().info('Forward key pressed')
+            threading.Thread(target=self._do_forward_sweep, daemon=True).start()
+        elif char == REVERSE_KEY:
             self.get_logger().info('Reverse key pressed')
-            threading.Thread(target=self._do_sweep_reverse, daemon=True).start()
+            threading.Thread(target=self._do_reverse_sweep, daemon=True).start()
 
     def _trigger_callback(self, msg: Bool):
         """Remote trigger via /servo/trigger topic."""
         if msg.data:
             self.get_logger().info('Remote trigger received on /servo/trigger')
-            threading.Thread(target=self._do_sweep, daemon=True).start()
+            threading.Thread(target=self._do_forward_sweep, daemon=True).start()
 
     def _rc_callback(self, msg: RCIn):
-        """Trigger na zboczu narastającym RC CH8: 1000→2000."""
+        """
+        RC CH8 edge triggers:
+          - rising edge (LOW→HIGH, 1000→2000): forward sweep.
+          - falling edge (HIGH→LOW, 2000→1000): reverse sweep (if armed).
+        """
         ch_idx = RC_RELEASE_CHANNEL - 1
         if ch_idx < 0 or ch_idx >= len(msg.channels):
             return
@@ -296,7 +349,12 @@ class ServoControllerNode(Node):
             self.get_logger().info(
                 f'RC CH{RC_RELEASE_CHANNEL} HIGH ({pwm} µs) → servo release'
             )
-            threading.Thread(target=self._do_sweep, daemon=True).start()
+            threading.Thread(target=self._do_forward_sweep, daemon=True).start()
+        elif not is_high and self._rc_channel_was_high:
+            self.get_logger().info(
+                f'RC CH{RC_RELEASE_CHANNEL} LOW ({pwm} µs) → reverse sweep'
+            )
+            threading.Thread(target=self._do_reverse_sweep, daemon=True).start()
 
         self._rc_channel_was_high = is_high
 
@@ -315,9 +373,9 @@ class ServoControllerNode(Node):
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def destroy_node(self):
-        self.get_logger().info('Shutting down — returning to home and releasing GPIO')
+        self.get_logger().info('Shutting down — stopping servo and releasing GPIO')
         self._key_reader.stop()
-        self._set_servo(SERVO_HOME_PW)
+        self._set_servo(self._neutral_pw)
         time.sleep(0.5)
         self._servo_off()
         lgpio.gpiochip_close(self._chip)

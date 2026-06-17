@@ -6,7 +6,7 @@ setup(
     name=package_name,
     version='0.0.0',
     packages=[package_name],
-    install_requires=['setuptools','pyzbar'],
+    install_requires=['setuptools', 'pyzbar'],
     zip_safe=True,
     maintainer='you',
     maintainer_email='you@example.com',

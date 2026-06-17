@@ -28,6 +28,9 @@ def generate_launch_description():
         executable='servo_controller',
         name='servo_controller',
         output='screen',
+        parameters=[{
+            'servo_position': 'closed',   # startup state: 'closed' or 'opened'
+        }],
     )
 
     return LaunchDescription([

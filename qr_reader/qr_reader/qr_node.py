@@ -1,49 +1,42 @@
-#sudo apt install libzbar0
-#pip install pyzbar
-
-
 import rclpy
+from cv_bridge import CvBridge
+from dualtech_detection.qr_decoder import decode_qr
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
-from cv_bridge import CvBridge
-from pyzbar.pyzbar import decode
-import cv2
+
+CAMERA_IMAGE_TOPIC = '/camera/image_raw'
+QR_DATA_TOPIC = '/qr_data'
+
 
 class QRNode(Node):
     def __init__(self):
         super().__init__('qr_node')
+        self._bridge = CvBridge()
+        self._last_qr = ''
 
-        self.bridge = CvBridge()
+        self.create_subscription(Image, CAMERA_IMAGE_TOPIC, self._callback, 10)
+        self._publisher = self.create_publisher(String, QR_DATA_TOPIC, 10)
+        self.get_logger().info(f'QR reader: {CAMERA_IMAGE_TOPIC} → {QR_DATA_TOPIC}')
 
-        self.subscription = self.create_subscription(
-            Image,
-            '/camera/image_raw',
-            self.callback,
-            10
-        )
+    def _callback(self, msg: Image) -> None:
+        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        qr = decode_qr(frame)
+        if not qr or qr == self._last_qr:
+            return
 
-        self.publisher = self.create_publisher(String, '/qr_data', 10)
-
-    def callback(self, msg):
-        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-        
-        small = cv2.resize(frame, (320, 240))
-        decoded_objects = decode(small)
-
-        if decoded_objects:
-            for obj in decoded_objects:
-                data = obj.data.decode('utf-8')
-
-                self.publisher.publish(String(data=data))
-                self.get_logger().info(f"QR: {data}")
-        else:
-            self.get_logger().debug("Brak QR")
+        self._last_qr = qr
+        self._publisher.publish(String(data=qr))
+        self.get_logger().info(f'QR: {qr}')
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = QRNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()

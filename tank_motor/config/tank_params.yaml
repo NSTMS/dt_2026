@@ -7,6 +7,11 @@ actuator_node:
     home_arm_angle: 90.0
     invert_servo: true
     reverse_stepper: false
+    # Wygładzanie serwa MG995 (redukcja drgań na software PWM)
+    servo_slew_deg_per_s: 120.0      # maks. prędkość ramienia [°/s] — mniej = gładziej
+    servo_deadband_deg: 1.0          # ignoruj zmiany mniejsze niż [°]
+    servo_settle_ms: 600.0           # czas dojazdu zanim PWM zostanie zwolnione [ms]
+    servo_release_when_idle: true    # po dojeździe wyłącz PWM (ramię luzem, zero drgań)
 
 keyboard_controller:
   ros__parameters:

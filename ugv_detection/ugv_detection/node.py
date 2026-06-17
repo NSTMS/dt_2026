@@ -10,13 +10,18 @@ from dualtech_detection.qr_decoder import decode_qr
 from dualtech_detection.types import DetectionCandidate
 from dualtech_msgs.msg import UgvDetection
 from rclpy.node import Node
+from sensor_msgs.msg import Image
 from ugv_detection.topics import UGV_DETECTION_TOPIC
 
+CAMERA_IMAGE_TOPIC = '/camera/image_raw'
+
 TARGET_FPS = float(os.getenv('TARGET_FPS', '12'))
-CAMERA_WIDTH = int(os.getenv('CAMERA_WIDTH', '640'))
-CAMERA_HEIGHT = int(os.getenv('CAMERA_HEIGHT', '480'))
+CAMERA_WIDTH = int(os.getenv('CAMERA_WIDTH', '1280'))
+CAMERA_HEIGHT = int(os.getenv('CAMERA_HEIGHT', '720'))
 CAMERA_SOURCE = os.getenv('CAMERA_SOURCE', 'csi').lower()
 UDP_PORT = int(os.getenv('UDP_PORT', '5600'))
+STREAM_HOST = os.getenv('STREAM_HOST', '')
+STREAM_PORT = int(os.getenv('STREAM_PORT', '5600'))
 YOLO_CONFIDENCE = float(os.getenv('YOLO_CONFIDENCE', '0.65'))
 VOTING_WINDOW_SIZE = int(os.getenv('VOTING_WINDOW_SIZE', '10'))
 VOTING_MIN_HITS = int(os.getenv('VOTING_MIN_HITS', '6'))
@@ -31,14 +36,33 @@ YOLO_MODEL = os.getenv(
     os.path.join(get_package_share_directory('ugv_detection'), 'yolov8n_ground.pt'),
 )
 
-GST_PIPELINE_CSI = (
-    'libcamerasrc ! '
-    'video/x-raw,format=NV12 ! '
-    'videoconvert ! '
-    'videoscale ! '
-    f'video/x-raw,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},format=BGR ! '
-    'appsink drop=true max-buffers=1'
+_CSI_SOURCE = (
+    f'libcamerasrc ! '
+    f'video/x-raw,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},framerate=30/1,format=NV12 ! '
+    f'videoflip method=rotate-180 ! '
 )
+_APPSINK = (
+    f'videoconvert ! videoscale ! '
+    f'video/x-raw,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},format=BGR ! '
+    f'appsink drop=true max-buffers=1'
+)
+_STREAM_BRANCH = (
+    f'queue ! videoconvert ! video/x-raw,format=I420 ! '
+    f'x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 ! '
+    f'h264parse ! rtph264pay config-interval=1 pt=96 ! '
+    f'multiudpsink clients={STREAM_HOST}:{STREAM_PORT} sync=false'
+) if STREAM_HOST else None
+
+if _STREAM_BRANCH:
+    GST_PIPELINE_CSI = (
+        _CSI_SOURCE +
+        f'tee name=t '
+        f't. ! queue ! {_APPSINK} '
+        f't. ! {_STREAM_BRANCH}'
+    )
+else:
+    GST_PIPELINE_CSI = _CSI_SOURCE + _APPSINK
+
 GST_PIPELINE_UDP = (
     f'udpsrc port={UDP_PORT} ! '
     'application/x-rtp,encoding-name=H264,payload=96 ! '
@@ -54,6 +78,7 @@ class UgvDetectionNode(Node):
         super().__init__('ugv_detection_node')
 
         self._publisher = self.create_publisher(UgvDetection, UGV_DETECTION_TOPIC, 10)
+        self._image_publisher = self.create_publisher(Image, CAMERA_IMAGE_TOPIC, 10)
         self._bridge = CvBridge()
         self._object_id = 0
         self._recent_high_conf_classes: deque[str] = deque(maxlen=VOTING_WINDOW_SIZE)
@@ -71,6 +96,10 @@ class UgvDetectionNode(Node):
             f'detekcji (conf>={YOLO_CONFIDENCE:.2f})'
         )
         self.get_logger().info(f'Źródło kamery: {CAMERA_SOURCE} (UDP:{UDP_PORT})')
+        if STREAM_HOST:
+            self.get_logger().info(f'Streaming RTP → {STREAM_HOST}:{STREAM_PORT}')
+        else:
+            self.get_logger().info('Streaming RTP wyłączony (ustaw STREAM_HOST)')
         self.get_logger().info(f'Model YOLO: {YOLO_MODEL}')
         self.get_logger().info(f'Klasy modelu: {self._detector.class_names}')
         if CLASS_WHITELIST:
@@ -91,6 +120,11 @@ class UgvDetectionNode(Node):
     def _on_frame(self, frame, candidates: list[DetectionCandidate], annotated) -> None:
         if not rclpy.ok():
             return
+
+        image_msg = self._bridge.cv2_to_imgmsg(frame, encoding='bgr8')
+        image_msg.header.stamp = self.get_clock().now().to_msg()
+        image_msg.header.frame_id = 'ugv_camera'
+        self._image_publisher.publish(image_msg)
 
         qr = decode_qr(frame)
         if qr:

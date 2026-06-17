@@ -1,17 +1,17 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
-from launch_ros.substitutions import FindPackageShare
-from launch.substitutions import PathJoinSubstitution
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument('target_fps', default_value='12'),
-            DeclareLaunchArgument('camera_width', default_value='640'),
-            DeclareLaunchArgument('camera_height', default_value='480'),
+            DeclareLaunchArgument('camera_width', default_value='1280'),
+            DeclareLaunchArgument('camera_height', default_value='720'),
             DeclareLaunchArgument('camera_source', default_value='csi'),
             DeclareLaunchArgument('udp_port', default_value='5600'),
             DeclareLaunchArgument('yolo_confidence', default_value='0.65'),
@@ -30,6 +30,11 @@ def generate_launch_description() -> LaunchDescription:
                 default_value=PathJoinSubstitution(
                     [FindPackageShare('tank_motor'), 'config', 'tank_params.yaml']
                 ),
+            ),
+            DeclareLaunchArgument('enable_qr_reader', default_value='true'),
+            SetEnvironmentVariable(
+                'GST_PLUGIN_PATH',
+                '/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0',
             ),
             SetEnvironmentVariable('TARGET_FPS', LaunchConfiguration('target_fps')),
             SetEnvironmentVariable('CAMERA_WIDTH', LaunchConfiguration('camera_width')),
@@ -53,6 +58,13 @@ def generate_launch_description() -> LaunchDescription:
                 executable='ugv_detection',
                 name='ugv_detection_node',
                 output='screen',
+            ),
+            Node(
+                package='qr_reader',
+                executable='qr_node',
+                name='qr_node',
+                output='screen',
+                condition=IfCondition(LaunchConfiguration('enable_qr_reader')),
             ),
             Node(
                 package='tank_motor',
