@@ -15,8 +15,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument('camera_source', default_value='csi'),
             DeclareLaunchArgument('udp_port', default_value='5600'),
             DeclareLaunchArgument('yolo_confidence', default_value='0.65'),
-            DeclareLaunchArgument('voting_window_size', default_value='10'),
-            DeclareLaunchArgument('voting_min_hits', default_value='6'),
+            DeclareLaunchArgument('qr_confirm_count', default_value='3'),
             DeclareLaunchArgument('class_whitelist', default_value=''),
             DeclareLaunchArgument('class_blacklist', default_value=''),
             DeclareLaunchArgument(
@@ -42,14 +41,7 @@ def generate_launch_description() -> LaunchDescription:
             SetEnvironmentVariable('CAMERA_SOURCE', LaunchConfiguration('camera_source')),
             SetEnvironmentVariable('UDP_PORT', LaunchConfiguration('udp_port')),
             SetEnvironmentVariable('YOLO_CONFIDENCE', LaunchConfiguration('yolo_confidence')),
-            SetEnvironmentVariable(
-                'VOTING_WINDOW_SIZE',
-                LaunchConfiguration('voting_window_size'),
-            ),
-            SetEnvironmentVariable(
-                'VOTING_MIN_HITS',
-                LaunchConfiguration('voting_min_hits'),
-            ),
+            SetEnvironmentVariable('QR_CONFIRM_COUNT', LaunchConfiguration('qr_confirm_count')),
             SetEnvironmentVariable('CLASS_WHITELIST', LaunchConfiguration('class_whitelist')),
             SetEnvironmentVariable('CLASS_BLACKLIST', LaunchConfiguration('class_blacklist')),
             SetEnvironmentVariable('YOLO_MODEL', LaunchConfiguration('yolo_model')),
