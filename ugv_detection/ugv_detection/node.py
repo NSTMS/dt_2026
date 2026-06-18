@@ -167,7 +167,7 @@ class UgvDetectionNode(Node):
             return
 
         best_candidate = max(candidates, key=lambda c: c.confidence)
-        self._update_qr_tracker(qr, best_candidate, annotated)
+        self._update_qr_tracker(qr, best_candidate, annotated, candidates)
 
     def _filter_classes(self, candidates: list[DetectionCandidate]) -> list[DetectionCandidate]:
         filtered = candidates
@@ -190,18 +190,24 @@ class UgvDetectionNode(Node):
         qr: str,
         candidate: DetectionCandidate,
         annotated,
+        candidates: list[DetectionCandidate],
     ) -> None:
+        detections_label = ', '.join(
+            f'{c.class_name} {c.confidence:.2f}' for c in candidates
+        )
         entry = self._qr_tracker.get(qr)
         if entry is None or entry[0] != candidate.class_name:
             self._qr_tracker[qr] = [candidate.class_name, 1]
             self.get_logger().info(
-                f'QR {qr}: [{candidate.class_name}] count=1/{QR_CONFIRM_COUNT}'
+                f'QR {qr}: {detections_label} | '
+                f'[{candidate.class_name}] count=1/{QR_CONFIRM_COUNT}'
             )
             return
 
         entry[1] += 1
         self.get_logger().info(
-            f'QR {qr}: [{candidate.class_name}] count={entry[1]}/{QR_CONFIRM_COUNT}'
+            f'QR {qr}: {detections_label} | '
+            f'[{candidate.class_name}] count={entry[1]}/{QR_CONFIRM_COUNT}'
         )
         if entry[1] >= QR_CONFIRM_COUNT:
             self._publish_confirmed(candidate, annotated, qr)

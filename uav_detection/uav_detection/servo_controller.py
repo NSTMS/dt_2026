@@ -24,7 +24,6 @@ Dependencies:
   pip install readchar
 """
 
-import os
 import sys
 import tty
 import termios
@@ -33,9 +32,8 @@ import time
 
 import lgpio
 import rclpy
-from mavros_msgs.msg import RCIn
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int8, String
 
 
 # ─── USER CONSTANTS ────────────────────────────────────────────────────────────
@@ -86,11 +84,9 @@ SWEEP_RAMP_DELAY = 0.015    # Seconds between steps (~0.65 s per ramp)
 # ── lgpio PWM settings ─────────────────────────────────────────────────────────
 PWM_FREQUENCY    = 50       # Hz — standard servo frequency
 
-# ── RC trigger (RadioMaster Pocket → mavros → CH8) ─────────────────────────────
-RC_RELEASE_CHANNEL = int(os.getenv('RC_RELEASE_CHANNEL', '8'))   # kanał 1..18
-RC_PWM_OFF = int(os.getenv('RC_PWM_OFF', '1000'))                  # wyłączony
-RC_PWM_ON = int(os.getenv('RC_PWM_ON', '2000'))                    # włączony
-RC_PWM_THRESHOLD = int(os.getenv('RC_PWM_THRESHOLD', '1500'))      # próg HIGH
+# ── RC command values (from rc_listener on /servo/rc_command) ──────────────────
+RC_COMMAND_FORWARD = 1      # forward sweep (open)
+RC_COMMAND_REVERSE = -1     # reverse sweep (close)
 
 
 # ─── STDIN KEYBOARD READER ─────────────────────────────────────────────────────
@@ -145,9 +141,9 @@ class ServoControllerNode(Node):
     ROS2 node that drives a 360° continuous-rotation servo. It tracks a logical
     position ('opened'/'closed') so sweeps are only triggered when valid:
       - FORWARD sweep = OPEN  (only when closed) on TRIGGER_KEY / /servo/trigger /
-        RC CH8 rising edge.
-      - REVERSE sweep = CLOSE (only when opened) on REVERSE_KEY / RC CH8 falling
-        edge.
+        /servo/rc_command == 1.
+      - REVERSE sweep = CLOSE (only when opened) on REVERSE_KEY /
+        /servo/rc_command == -1.
       - Publishes sweep status on  /servo/status (std_msgs/String).
       - Publishes sweep active flag on /servo/active (std_msgs/Bool).
 
@@ -192,12 +188,11 @@ class ServoControllerNode(Node):
 
         # ── Subscriber ───────────────────────────────────────────────────────
         self.create_subscription(Bool, '/servo/trigger', self._trigger_callback, 10)
-        self.create_subscription(RCIn, '/mavros/rc/in', self._rc_callback, 10)
+        self.create_subscription(Int8, '/servo/rc_command', self._rc_command_callback, 10)
 
         # ── Internal state ───────────────────────────────────────────────────
         self._sweep_lock    = threading.Lock()
         self._sweep_running = False
-        self._rc_channel_was_high = False
 
         # ── Stdin keyboard listener ──────────────────────────────────────────
         self._key_reader = StdinKeyReader(callback=self._on_key_press)
@@ -215,10 +210,7 @@ class ServoControllerNode(Node):
             f'Reverse sweep (CLOSE): STOP({self._neutral_pw}µs) → SPEED({self._reverse_speed_pw()}µs) → STOP'
         )
         self.get_logger().info(f'Servo position at startup: {self._position.upper()}')
-        self.get_logger().info(
-            f'RC trigger: CH{RC_RELEASE_CHANNEL} '
-            f'({RC_PWM_OFF}=OFF, {RC_PWM_ON}=ON, próg={RC_PWM_THRESHOLD})'
-        )
+        self.get_logger().info('RC commands accepted on /servo/rc_command (1=forward, -1=reverse)')
 
     # ── Servo output ─────────────────────────────────────────────────────────
 
@@ -332,31 +324,18 @@ class ServoControllerNode(Node):
             self.get_logger().info('Remote trigger received on /servo/trigger')
             threading.Thread(target=self._do_forward_sweep, daemon=True).start()
 
-    def _rc_callback(self, msg: RCIn):
+    def _rc_command_callback(self, msg: Int8):
         """
-        RC CH8 edge triggers:
-          - rising edge (LOW→HIGH, 1000→2000): forward sweep.
-          - falling edge (HIGH→LOW, 2000→1000): reverse sweep (if armed).
+        RC command from rc_listener on /servo/rc_command:
+          - 1  → forward sweep (open).
+          - -1 → reverse sweep (close).
         """
-        ch_idx = RC_RELEASE_CHANNEL - 1
-        if ch_idx < 0 or ch_idx >= len(msg.channels):
-            return
-
-        pwm = int(msg.channels[ch_idx])
-        is_high = pwm >= RC_PWM_THRESHOLD
-
-        if is_high and not self._rc_channel_was_high:
-            self.get_logger().info(
-                f'RC CH{RC_RELEASE_CHANNEL} HIGH ({pwm} µs) → servo release'
-            )
+        if msg.data == RC_COMMAND_FORWARD:
+            self.get_logger().info('RC command: forward')
             threading.Thread(target=self._do_forward_sweep, daemon=True).start()
-        elif not is_high and self._rc_channel_was_high:
-            self.get_logger().info(
-                f'RC CH{RC_RELEASE_CHANNEL} LOW ({pwm} µs) → reverse sweep'
-            )
+        elif msg.data == RC_COMMAND_REVERSE:
+            self.get_logger().info('RC command: reverse')
             threading.Thread(target=self._do_reverse_sweep, daemon=True).start()
-
-        self._rc_channel_was_high = is_high
 
     # ── Publisher helpers ─────────────────────────────────────────────────────
 
