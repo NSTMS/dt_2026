@@ -6,17 +6,16 @@ from dataclasses import replace
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from dualtech_detection.geolocation import CameraModel, estimate_ground_offset
 from dualtech_detection.pipeline import GStreamerFrameStream, YoloDetector
 from dualtech_detection.qr_decoder import decode_qr_all
 from dualtech_detection.qr_proximity_aggregator import QrProximityAggregator
 from dualtech_detection.types import DetectionCandidate
-from dualtech_msgs.msg import UavDetection
+from dualtech_msgs.msg import Detection
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
 from uav_detection.telemetry import MavrosTelemetry
-from uav_detection.topics import UAV_DETECTION_TOPIC
+from uav_detection.topics import DETECTION_TOPIC
 
 TARGET_FPS = float(os.getenv('TARGET_FPS', '15'))
 CAMERA_WIDTH = int(os.getenv('CAMERA_WIDTH', '1280'))
@@ -28,8 +27,6 @@ STREAM_PORT = int(os.getenv('STREAM_PORT', '5600'))
 TRIGGER_DROP_ON_QR = os.getenv('TRIGGER_DROP_ON_QR', 'true').lower() == 'true'
 QR_PROXIMITY_RADIUS_PX = float(os.getenv('QR_PROXIMITY_RADIUS_PX', '400'))
 CONFIDENCE_SUM_THRESHOLD = float(os.getenv('CONFIDENCE_SUM_THRESHOLD', '1.3'))
-CAMERA_H_FOV_DEG = float(os.getenv('CAMERA_H_FOV_DEG', '70'))
-CAMERA_V_FOV_DEG = float(os.getenv('CAMERA_V_FOV_DEG', '50'))
 YOLO_CONFIDENCE = float(os.getenv('YOLO_CONFIDENCE', '0.5'))
 CLASS_WHITELIST = {
     name.strip() for name in os.getenv('CLASS_WHITELIST', '').split(',') if name.strip()
@@ -114,7 +111,7 @@ class UavDetectionNode(Node):
     def __init__(self):
         super().__init__('uav_detection_node')
 
-        self._publisher = self.create_publisher(UavDetection, UAV_DETECTION_TOPIC, 10)
+        self._publisher = self.create_publisher(Detection, DETECTION_TOPIC, 10)
         self._drop_trigger_pub = self.create_publisher(Bool, '/servo/trigger', 10)
         self._bridge = CvBridge()
         self._telemetry = MavrosTelemetry(self)
@@ -132,7 +129,7 @@ class UavDetectionNode(Node):
         )
 
         self.get_logger().info(
-            f'UAV: {UAV_DETECTION_TOPIC}, '
+            f'UAV: {DETECTION_TOPIC}, '
             f'QR proximity {QR_PROXIMITY_RADIUS_PX:.0f}px, '
             f'suma conf >= {CONFIDENCE_SUM_THRESHOLD:.1f} (conf>={YOLO_CONFIDENCE:.2f})'
         )
@@ -206,19 +203,12 @@ class UavDetectionNode(Node):
             candidates,
         )
 
-        camera = CameraModel(
-            width=frame.shape[1],
-            height=frame.shape[0],
-            h_fov_deg=CAMERA_H_FOV_DEG,
-            v_fov_deg=CAMERA_V_FOV_DEG,
-        )
         telemetry = self._telemetry.snapshot()
         for event in events:
             self._publish_confirmed(
                 event.candidate,
                 annotated,
                 event.qr_text,
-                camera,
                 telemetry,
             )
             self.get_logger().info(
@@ -247,34 +237,29 @@ class UavDetectionNode(Node):
         candidate: DetectionCandidate,
         annotated,
         qr: str,
-        camera: CameraModel,
         telemetry,
     ) -> None:
-        cx, cy = candidate.bbox_center
-        relative = estimate_ground_offset(cx, cy, telemetry.altitude_baro, camera)
-
-        msg = UavDetection()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'uav_camera'
-        msg.object_id = self._object_id
+        msg = Detection()
         msg.object_type = candidate.class_name
-        msg.object_image = self._bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+        image_msg = self._bridge.cv2_to_compressed_imgmsg(annotated)
+        image_msg.header.stamp = self.get_clock().now().to_msg()
+        image_msg.header.frame_id = 'uav_camera'
+        msg.object_image = image_msg
         msg.qr_value = qr
-        msg.latitude = telemetry.latitude
-        msg.longitude = telemetry.longitude
-        msg.altitude_gps = telemetry.altitude_gps
-        msg.altitude_baro = telemetry.altitude_baro
-        msg.relative_x = relative.x
-        msg.relative_y = relative.y
-        msg.relative_z = relative.z
+        if telemetry.gps_fix is not None:
+            msg.gps_location = telemetry.gps_fix
 
         self._publisher.publish(msg)
         self._object_id += 1
 
+        gps_info = ''
+        if telemetry.gps_fix is not None:
+            gps_info = (
+                f' | GPS: {telemetry.gps_fix.latitude:.6f}, '
+                f'{telemetry.gps_fix.longitude:.6f}'
+            )
         self.get_logger().info(
-            f'Publikacja [{msg.object_type}] id={msg.object_id} | '
-            f'rel=({relative.x:.1f}, {relative.y:.1f}, {relative.z:.1f}) m | '
-            f'alt={telemetry.altitude_baro:.1f}m'
+            f'Publikacja [{msg.object_type}] id={self._object_id}{gps_info}'
         )
 
 

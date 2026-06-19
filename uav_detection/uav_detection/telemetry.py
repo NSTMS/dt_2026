@@ -18,6 +18,7 @@ class DroneTelemetry:
     timestamp: float = 0.0
     has_gps: bool = False
     has_altitude: bool = False
+    gps_fix: NavSatFix | None = None
 
 
 class MavrosTelemetry:
@@ -57,6 +58,7 @@ class MavrosTelemetry:
                 timestamp=self._state.timestamp,
                 has_gps=self._state.has_gps,
                 has_altitude=self._state.has_altitude,
+                gps_fix=self._state.gps_fix,
             )
 
     def close(self) -> None:
@@ -65,6 +67,7 @@ class MavrosTelemetry:
 
     def _on_gps(self, msg: NavSatFix) -> None:
         with self._lock:
+            self._state.gps_fix = msg
             self._state.latitude = msg.latitude
             self._state.longitude = msg.longitude
             self._state.altitude_gps = msg.altitude

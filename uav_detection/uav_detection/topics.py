@@ -1,1 +1,1 @@
-UAV_DETECTION_TOPIC = '/uav/detection'
+DETECTION_TOPIC = '/detection'
